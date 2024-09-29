@@ -1,0 +1,128 @@
+---
+title: "Project1v2"
+author: "aw"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Overview
+
+The purpose of this document is to systematically import a text file containing data from a chess tournament cross table. The below R code uses string manipulations and extractions in order to clean up the text file and extract relevant information formatted in a clean, reusable, and exported dataframe with the goal of writing the newly created table to a CSV file for easy use.
+
+```{r libs}
+library(stringr)
+library(tidyverse)
+```
+
+## Import and Clean
+
+First you'll need to import the raw data from my github repo. You can find a link to the data here: \<[https://raw.githubusercontent.com/awrubes/Project-1-v2/main/tournamentinfo.txt](https://raw.githubusercontent.com/awrubes/Project-1-v2/refs/heads/main/tournamentinfo.txt){.uri}\>. Instead of reading the file directly into a structured format, the data is read in as a string vector to allow for specific string manipulation. This allows us to parse and clean the data in subsequent steps.
+
+```{r import}
+
+#import chess data as txt file
+chess_data <- suppressWarnings(readLines("https://raw.githubusercontent.com/awrubes/Project-1-v2/main/tournamentinfo.txt"
+))
+head(chess_data)
+chess_df <-tibble(raw=chess_data)
+
+head(chess_df)
+
+```
+
+Next, we'll want to clean up the text file so that it's easier to parse. We'll do this by getting rid of the header rows and removing the "---" row separators. This way the only text in the file will be the data we want to selectively extract.
+
+```{r clean}
+
+chess_df_clean <- chess_df %>%
+  filter(!grepl("^-+$", raw),
+          !grepl("^\\s*(Pair|Num)", raw))
+
+
+head(chess_df_clean)
+
+```
+
+Once the unnecessary rows are removed, we proceed to further structure the dataset. Each player’s data spans two rows—one for their general tournament information and another for their rating information. We separate these rows using the `mutate()` and `pivot_wider()` functions, which allow us to organize the data into separate columns for easier extraction.
+
+```{r reorganize}
+
+chess_df_clean <-chess_df_clean %>%
+  mutate(row_num = row_number()) %>%
+  mutate(info_type = ifelse(row_num %%2 == 1, "player_info", "player_rating_info")) %>%
+  group_by(info_type) %>%
+    mutate(group = row_number())%>%
+    pivot_wider(names_from = info_type, values_from = raw) %>%
+    select(-group)
+  
+chess_df_clean <- chess_df_clean %>%
+  mutate(
+    player_rating_info = ifelse(is.na(player_rating_info), lead(player_rating_info), player_info)
+       )%>%
+  filter(!is.na(player_info), !is.na(player_rating_info))
+  
+head(chess_df_clean)
+
+```
+
+## Extracting Data
+
+With the data structured, we now extract specific columns that contain player names, state information, total points, pre-tournament ratings, and games played. String extraction functions (`str_extract`) are applied to extract relevant data from each row. The `mutate()` function is used to create new columns that hold this information.
+
+We also calculate the average rating of opponents each player faced, using a combination of `lapply()` to extract the IDs of opponents and `sapply()` to compute their average ratings based on the opponent ratings in the data set.
+
+```{r extract}
+
+chess_df_clean <- chess_df_clean %>%
+  mutate(player_name = str_extract(player_info, "(?<=\\|)\\s*[A-Z\\s]+(?=\\s*\\|)"))%>%
+  mutate(state = trimws(str_extract(player_rating_info, "^\\s*[A-Z]{2}\\b")))%>%
+  mutate(total_points = as.numeric(str_extract(player_info, "(?<=|)\\d\\.\\d")))%>%
+  mutate(pre_rating = as.numeric(str_extract(player_rating_info, "(?<=R:)\\s*(\\d+)(?=\\s*->|\\w)")))%>%
+  mutate(games_played = as.numeric(str_count(player_info, "\\b(W|L|D){1}\\s*\\d+")))%>%
+  mutate(
+    opponent_ids = lapply(player_info, function(info){
+      as.numeric(trimws(unlist(str_extract_all(info, "(?<=\\b[WLD])\\s*\\d+"))))
+    })
+  )%>%
+  mutate(
+    avg_op_rating=sapply(opponent_ids, function(ids){
+      
+      opponent_ratings <- .data$pre_rating[ids]
+      
+      total_opponent_ratings <- sum(opponent_ratings, na.rm = TRUE)
+      
+      avg_op_rating <- total_opponent_ratings / length(ids)
+      return(avg_op_rating)
+      
+    })
+  )
+
+head(chess_df_clean)
+
+```
+
+This step produces a clean data set that includes critical player statistics such as total points, pre-tournament ratings, the number of games played, and the average rating of their opponents.
+
+## Final Data and Export
+
+After extracting the relevant information, the final step is to create a dataframe that includes only the necessary columns: player name, state, total points, pre-tournament rating, and average opponent rating. This dataframe is then exported to a CSV file for future use.
+
+```{r remove_columns}
+
+selected_columns <- chess_df_clean[, c("player_name", "state", "total_points", "pre_rating", "avg_op_rating")]
+
+head(selected_columns)
+
+```
+
+The resulting CSV file contains a clean and reusable dataset that can be used for further analysis or reporting. The streamlined approach ensures that the data is both accurate and well-organized for future use.
+
+```{r csv}
+
+write.csv(selected_columns, file = "chess_tournament_selected_columns.csv", row.names = FALSE)  
+
+```
